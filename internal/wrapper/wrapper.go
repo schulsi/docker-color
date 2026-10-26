@@ -2,6 +2,7 @@ package wrapper
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/devemio/docker-color-output/internal/app"
 	"github.com/devemio/docker-color-output/internal/config"
+	"github.com/devemio/docker-color-output/internal/rules"
 	"github.com/devemio/docker-color-output/pkg/color"
 )
 
@@ -36,8 +38,11 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	kind, colorizable := DetectCommand(args)
 	colorize := colorizable && ColorEnabled(os.LookupEnv, stdoutIsTerminal())
-	if kind == "stats" && !hasNoStream(args) {
-		colorize = false
+	if colorize && kind == "stats" && !hasNoStream(args) {
+		command := exec.Command(dockerPath, args...)
+		command.Stdin = stdin
+		command.Stderr = stderr
+		return runLiveStats(command, stdout)
 	}
 
 	command := exec.Command(dockerPath, args...)
@@ -48,7 +53,7 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runDirect(command)
 	}
 
-	return runColorized(command, stdout)
+	return runColorized(command, stdout, kind)
 }
 
 func DetectCommand(args []string) (string, bool) {
@@ -65,6 +70,9 @@ func DetectCommand(args []string) (string, bool) {
 			if subcommand == "ls" || subcommand == "list" {
 				return "ps", true
 			}
+			if subcommand == "inspect" {
+				return "inspect", true
+			}
 		case "image":
 			if subcommand == "ls" || subcommand == "list" {
 				return "images", true
@@ -80,7 +88,7 @@ func DetectCommand(args []string) (string, bool) {
 	}
 
 	switch command {
-	case "ps", "images":
+	case "ps", "images", "inspect":
 		return command, true
 	case "stats":
 		return command, true
@@ -196,7 +204,7 @@ func hasNoStream(args []string) bool {
 	return false
 }
 
-func runColorized(command *exec.Cmd, output io.Writer) int {
+func runColorized(command *exec.Cmd, output io.Writer, kind string) int {
 	pipe, err := command.StdoutPipe()
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "dcolor: stdout pipe:", err)
@@ -223,21 +231,24 @@ func runColorized(command *exec.Cmd, output io.Writer) int {
 	}
 
 	if err = command.Wait(); err != nil {
-		if _, writeErr := writeColorized(data, output); writeErr != nil {
+		if _, writeErr := writeColorized(data, output, kind); writeErr != nil {
 			fmt.Fprintln(command.Stderr, "dcolor: write output:", writeErr)
 		}
 		return exitCode(err)
 	}
-	if _, err = writeColorized(data, output); err != nil {
+	if _, err = writeColorized(data, output, kind); err != nil {
 		fmt.Fprintln(command.Stderr, "dcolor: write output:", err)
 		return 1
 	}
 	return 0
 }
 
-func writeColorized(data []byte, output io.Writer) (int, error) {
+func writeColorized(data []byte, output io.Writer, kind string) (int, error) {
 	if len(data) == 0 || bytes.Contains(data, []byte("\x1b[")) {
 		return output.Write(data)
+	}
+	if kind == "inspect" {
+		return writeJSONColorized(data, output)
 	}
 
 	rows := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
@@ -260,6 +271,73 @@ func writeColorized(data []byte, output io.Writer) (int, error) {
 		return output.Write(data)
 	}
 	return io.WriteString(output, strings.Join(formatted, "\n")+trailingNewline(data))
+}
+
+func writeJSONColorized(data []byte, output io.Writer) (int, error) {
+	if !json.Valid(data) {
+		return output.Write(data)
+	}
+	cfg, err := config.Default()
+	if err != nil {
+		return output.Write(data)
+	}
+	color.SetPalette(color.Palette(cfg.Colors))
+
+	var result strings.Builder
+	for index := 0; index < len(data); {
+		if data[index] == '"' {
+			end := index + 1
+			for end < len(data) {
+				if data[end] == '\\' {
+					end += 2
+					continue
+				}
+				if data[end] == '"' {
+					end++
+					break
+				}
+				end++
+			}
+			colorName := "green"
+			lookahead := end
+			for lookahead < len(data) && (data[lookahead] == ' ' || data[lookahead] == '\n' || data[lookahead] == '\r' || data[lookahead] == '\t') {
+				lookahead++
+			}
+			if lookahead < len(data) && data[lookahead] == ':' {
+				colorName = "lightBlue"
+			}
+			result.WriteString(rules.Colorize(colorName, string(data[index:end])))
+			index = end
+			continue
+		}
+
+		if data[index] == '-' || data[index] >= '0' && data[index] <= '9' || data[index] == 't' || data[index] == 'f' || data[index] == 'n' {
+			end := index + 1
+			for end < len(data) && !isJSONDelimiter(data[end]) {
+				end++
+			}
+			colorName := "yellow"
+			if data[index] == 't' || data[index] == 'f' || data[index] == 'n' {
+				colorName = "purple"
+			}
+			result.WriteString(rules.Colorize(colorName, string(data[index:end])))
+			index = end
+			continue
+		}
+
+		result.WriteByte(data[index])
+		index++
+	}
+	return io.WriteString(output, result.String())
+}
+
+func isJSONDelimiter(value byte) bool {
+	switch value {
+	case ' ', '\n', '\r', '\t', ',', '}', ']', ':':
+		return true
+	default:
+		return false
+	}
 }
 
 func formatRows(rows []string, cfg config.Config) (formatted []string, err error) {

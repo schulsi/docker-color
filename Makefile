@@ -1,5 +1,5 @@
 BIN=$(CURDIR)/bin
-GO=$(shell which go)
+GO=go
 APP=docker-color-output
 WRAPPER=dcolor
 

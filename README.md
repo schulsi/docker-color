@@ -155,12 +155,14 @@ dcolor ps
 dcolor ps -a
 dcolor images
 dcolor container ls
+dcolor container inspect mycontainer
 dcolor compose ps
+dcolor stats
 dcolor stats --no-stream
 dcolor exec -it mycontainer bash
 ```
 
-The wrapper recognizes `ps`, `container ls`, `images`, `image ls`, `compose ps`, and `stats --no-stream`. Logs, live `stats`, and unsupported commands are passed through unchanged. Interactive commands such as `exec`, `run`, `attach`, `login`, `compose exec`, `compose up`, and `build` replace the wrapper process on macOS/Linux, preserving terminal behavior and signals. Windows uses connected standard streams without process replacement.
+The wrapper recognizes `ps`, `container ls`, `images`, `image ls`, `container inspect` (and `inspect`), `compose ps`, and `stats`. Inspect JSON is colored without reformatting its structure. Live `stats` runs Docker against a PTY on macOS/Linux, streams refreshed frames through the existing table rules, forwards terminal resizing and termination signals, and avoids buffering the full stream. `stats --no-stream` uses the normal bounded table path. Logs and unsupported commands are passed through unchanged. Interactive commands such as `exec`, `run`, `attach`, `login`, `compose exec`, `compose up`, and `build` replace the wrapper process on macOS/Linux, preserving terminal behavior and signals. Windows uses connected standard streams without process replacement; live stats therefore remains passthrough there.
 
 Colors default to `auto`: enabled only when stdout is a terminal. Color policy precedence, highest first:
 
@@ -170,12 +172,14 @@ Colors default to `auto`: enabled only when stdout is a terminal. Color policy p
 4. A non-empty, non-zero `CLICOLOR_FORCE` enables colors
 5. Otherwise, colors follow whether stdout is a terminal (`DCOLOR_COLOR=auto`)
 
-The wrapper also bypasses colorization if Docker already emits ANSI control sequences. Table colorization is currently bounded to 8 MiB of output; larger output is relayed without transformation. Live `stats` and logs are deliberately passthrough because the existing table engine is not a terminal emulator or streaming log highlighter.
+For finite table output, colorization is bypassed if Docker already emits ANSI control sequences. Finite table and inspect output is bounded to 8 MiB; larger output is relayed without transformation. Live stats is processed frame by frame; logs remain passthrough because the project does not yet provide a streaming log highlighter.
 
 | Command | Behavior |
 | --- | --- |
 | `docker ps` | Original Docker output |
 | `dcolor ps` | Docker output with recognized table colors on a terminal |
+| `dcolor container inspect mycontainer` | JSON with colored keys and values on a terminal |
+| `dcolor stats` | Live colored table frames on macOS/Linux terminals |
 | `docker ps \| docker-color-output` | Existing stdin filter behavior |
 
 `docker-color-output` remains a standalone stdin-to-stdout filter; `dcolor` invokes Docker directly and preserves the Docker process exit status.

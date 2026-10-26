@@ -22,6 +22,7 @@ func TestDetectCommand(t *testing.T) {
 		{name: "global context", args: []string{"--context", "production", "ps"}, want: "ps", ok: true},
 		{name: "global host", args: []string{"-H", "unix:///var/run/docker.sock", "images"}, want: "images", ok: true},
 		{name: "container ls", args: []string{"container", "ls"}, want: "ps", ok: true},
+		{name: "container inspect", args: []string{"container", "inspect", "api"}, want: "inspect", ok: true},
 		{name: "image ls", args: []string{"image", "ls"}, want: "images", ok: true},
 		{name: "compose ps", args: []string{"compose", "ps"}, want: "compose ps", ok: true},
 		{name: "compose logs", args: []string{"compose", "logs", "-f"}, want: "compose logs"},
@@ -119,6 +120,81 @@ func TestColorizedMockDocker(t *testing.T) {
 	}
 }
 
+func TestWriteJSONColorized(t *testing.T) {
+	input := []byte("{\n  \"Id\": \"container-id\",\n  \"State\": {\"Running\": true},\n  \"RestartCount\": 2\n}\n")
+	var output bytes.Buffer
+	if _, err := writeJSONColorized(input, &output); err != nil {
+		t.Fatal(err)
+	}
+	colored := output.String()
+	if !strings.Contains(colored, "\x1b[1;34m\"Id\"") || !strings.Contains(colored, "\x1b[0;32m\"container-id\"") {
+		t.Fatalf("expected colored JSON keys and values, got %q", colored)
+	}
+	plain := strings.NewReplacer("\x1b[1;34m", "", "\x1b[0;32m", "", "\x1b[1;33m", "", "\x1b[0;35m", "", "\x1b[0m", "").Replace(colored)
+	if plain != string(input) {
+		t.Fatalf("JSON structure or whitespace changed: got %q, want %q", plain, input)
+	}
+}
+
+func TestWriteJSONColorizedInvalidInput(t *testing.T) {
+	input := []byte("not-json\n")
+	var output bytes.Buffer
+	if _, err := writeJSONColorized(input, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(output.Bytes(), input) {
+		t.Fatalf("invalid JSON changed: got %q, want %q", output.Bytes(), input)
+	}
+}
+
+func TestInspectMockDocker(t *testing.T) {
+	directory := t.TempDir()
+	mock := filepath.Join(directory, "docker")
+	if err := os.WriteFile(mock, []byte("#!/bin/sh\nprintf '%s\\n' '{\"Id\":\"container-id\",\"State\":{\"Running\":true}}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DCOLOR_DOCKER_PATH", mock)
+	t.Setenv("DCOLOR_COLOR", "always")
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "")
+
+	var stdout, stderr bytes.Buffer
+	code := Main([]string{"container", "inspect", "api"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("Main() exit code = %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "\x1b[1;34m\"Id\"") || !strings.Contains(stdout.String(), "\x1b[0;32m\"container-id\"") {
+		t.Fatalf("expected inspect JSON to be colored, got %q", stdout.String())
+	}
+}
+
+func TestLiveStatsUsesPTY(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("PTY live stats is supported on Unix platforms")
+	}
+	directory := t.TempDir()
+	mock := filepath.Join(directory, "docker")
+	script := "#!/bin/sh\n[ -t 1 ] || exit 34\nprintf '%s\\n' 'CONTAINER ID   NAME      CPU %     MEM USAGE / LIMIT     MEM %     NET I/O           BLOCK I/O     PIDS' 'e39ba801c0e1   nginx     90.00%    13.53MiB / 7.657GiB   50.17%    10.8MB / 42.1GB   0B / 12.3kB   17'\nprintf '\033[H'\nprintf '%s\\n' 'CONTAINER ID   NAME      CPU %     MEM USAGE / LIMIT     MEM %     NET I/O           BLOCK I/O     PIDS' 'e39ba801c0e1   nginx     25.00%    13.53MiB / 7.657GiB   50.17%    10.8MB / 42.1GB   0B / 12.3kB   17'\n"
+	if err := os.WriteFile(mock, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DCOLOR_DOCKER_PATH", mock)
+	t.Setenv("DCOLOR_COLOR", "always")
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "")
+
+	var stdout, stderr bytes.Buffer
+	code := Main([]string{"stats"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("Main() exit code = %d, stderr=%q", code, stderr.String())
+	}
+	if strings.Count(stdout.String(), "\x1b[1;34mCONTAINER ID") < 2 {
+		t.Fatalf("expected both live stats frames to be colorized, got %q", stdout.String())
+	}
+}
+
 func TestPassthroughProcess(t *testing.T) {
 	if os.Getenv("DCOLOR_TEST_HELPER") == "1" {
 		var args []string
@@ -172,7 +248,7 @@ func TestPassthroughProcess(t *testing.T) {
 func TestWriteColorizedPreservesANSI(t *testing.T) {
 	input := []byte("\x1b]0;docker\x07\x1b[31malready colored\x1b[0m\n")
 	var output bytes.Buffer
-	if _, err := writeColorized(input, &output); err != nil {
+	if _, err := writeColorized(input, &output, "ps"); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(output.Bytes(), input) {

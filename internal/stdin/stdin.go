@@ -5,9 +5,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
-
-	"github.com/devemio/docker-color-output/internal/stdout"
 )
 
 var ErrEmpty = errors.New("empty")
@@ -22,6 +21,10 @@ func Get(fn func(rows []string) error) error {
 		return fmt.Errorf("stdin: %w", ErrEmpty)
 	}
 
+	return Stream(os.Stdin, os.Stdout, fn)
+}
+
+func Stream(input io.Reader, output io.Writer, fn func(rows []string) error) error {
 	var (
 		xClearToEnd           = []byte("\033[J")
 		xClearToLineEnd       = []byte("\033[K")
@@ -31,11 +34,12 @@ func Get(fn func(rows []string) error) error {
 
 	var (
 		rows    = make([]string, 0, capRows)
-		scanner = bufio.NewScanner(os.Stdin)
+		scanner = bufio.NewScanner(input)
+		err     error
 	)
 
 	for scanner.Scan() {
-		row, reset, skip := processRow(scanner.Bytes(), xClearToEnd, xClearToLineEnd, xClearToLineEndPadded, xMoveCursorHome)
+		row, reset, skip := processRow(scanner.Bytes(), output, xClearToEnd, xClearToLineEnd, xClearToLineEndPadded, xMoveCursorHome)
 		if reset && len(rows) > 0 {
 			if err = fn(rows); err != nil {
 				return err
@@ -58,11 +62,11 @@ func Get(fn func(rows []string) error) error {
 	return fn(rows)
 }
 
-func processRow(row, xClearToEnd, xClearToLineEnd, xClearToLineEndPadded, xMoveCursorHome []byte) ([]byte, bool, bool) {
+func processRow(row []byte, output io.Writer, xClearToEnd, xClearToLineEnd, xClearToLineEndPadded, xMoveCursorHome []byte) ([]byte, bool, bool) {
 	reset := false
 
 	if rest, prefix, ok := cutPrefixAny(row, xClearToLineEnd, xClearToLineEndPadded); ok {
-		stdout.Print(string(prefix))
+		_, _ = output.Write(prefix)
 		row = rest
 		if len(row) == 0 {
 			return nil, false, true
@@ -72,12 +76,12 @@ func processRow(row, xClearToEnd, xClearToLineEnd, xClearToLineEndPadded, xMoveC
 	row = trimSuffixAny(row, xClearToLineEnd, xClearToLineEndPadded)
 
 	if rest, ok := bytes.CutPrefix(row, xClearToEnd); ok {
-		stdout.Print(string(xClearToEnd))
+		_, _ = output.Write(xClearToEnd)
 		row = rest
 	}
 
 	if rest, ok := bytes.CutPrefix(row, xMoveCursorHome); ok {
-		stdout.Print(string(xMoveCursorHome))
+		_, _ = output.Write(xMoveCursorHome)
 		row = rest
 		reset = true
 	}
