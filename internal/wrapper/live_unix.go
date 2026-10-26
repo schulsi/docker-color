@@ -3,12 +3,14 @@
 package wrapper
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/devemio/docker-color-output/internal/config"
@@ -17,6 +19,38 @@ import (
 )
 
 func runLiveStats(command *exec.Cmd, output io.Writer) int {
+	return runLivePTY(command, output, func(reader io.Reader) error {
+		cfg, cfgErr := config.Default()
+		if cfgErr == nil {
+			color.SetPalette(color.Palette(cfg.Colors))
+		}
+		return stdin.Stream(ptyReader{Reader: reader}, output, func(rows []string) error {
+			if len(rows) == 0 {
+				return nil
+			}
+			formatted := rows
+			if cfgErr == nil {
+				if colored, formatErr := formatRows(rows, cfg); formatErr == nil {
+					formatted = colored
+				}
+			}
+			for _, row := range formatted {
+				if _, writeErr := fmt.Fprintln(output, row); writeErr != nil {
+					return writeErr
+				}
+			}
+			return nil
+		})
+	})
+}
+
+func runLiveCommand(command *exec.Cmd, output io.Writer, kind string) int {
+	return runLivePTY(command, output, func(reader io.Reader) error {
+		return streamLiveLines(reader, output, kind)
+	})
+}
+
+func runLivePTY(command *exec.Cmd, output io.Writer, consume func(io.Reader) error) int {
 	master, slave, err := openPTY()
 	if err != nil {
 		command.Stdout = output
@@ -60,27 +94,7 @@ func runLiveStats(command *exec.Cmd, output io.Writer) int {
 		}
 	}()
 
-	cfg, cfgErr := config.Default()
-	if cfgErr == nil {
-		color.SetPalette(color.Palette(cfg.Colors))
-	}
-	streamErr := stdin.Stream(ptyReader{Reader: master}, output, func(rows []string) error {
-		if len(rows) == 0 {
-			return nil
-		}
-		formatted := rows
-		if cfgErr == nil {
-			if colored, formatErr := formatRows(rows, cfg); formatErr == nil {
-				formatted = colored
-			}
-		}
-		for _, row := range formatted {
-			if _, writeErr := fmt.Fprintln(output, row); writeErr != nil {
-				return writeErr
-			}
-		}
-		return nil
-	})
+	streamErr := consume(ptyReader{Reader: master})
 	close(stopResize)
 	signal.Stop(resizeSignals)
 	signal.Stop(processSignals)
@@ -93,6 +107,69 @@ func runLiveStats(command *exec.Cmd, output io.Writer) int {
 		return 1
 	}
 	return exitCode(waitErr)
+}
+
+func streamLiveLines(input io.Reader, output io.Writer, kind string) error {
+	cfg, err := config.Default()
+	if err != nil {
+		return err
+	}
+	color.SetPalette(color.Palette(cfg.Colors))
+	reader := bufio.NewReader(input)
+	line := make([]byte, 0, 4096)
+	for {
+		value, readErr := reader.ReadByte()
+		if value == '\r' || value == '\n' {
+			if _, err = io.WriteString(output, colorizeLiveLine(string(line), kind)); err != nil {
+				return err
+			}
+			if _, err = output.Write([]byte{value}); err != nil {
+				return err
+			}
+			line = line[:0]
+		} else if readErr == nil {
+			line = append(line, value)
+			if len(line) >= 64*1024 {
+				if _, err = output.Write(line); err != nil {
+					return err
+				}
+				line = line[:0]
+			}
+		}
+		if readErr != nil {
+			if len(line) > 0 {
+				_, err = io.WriteString(output, colorizeLiveLine(string(line), kind))
+			}
+			if errors.Is(readErr, syscall.EIO) || errors.Is(readErr, io.EOF) {
+				return err
+			}
+			return readErr
+		}
+	}
+}
+
+func colorizeLiveLine(line, kind string) string {
+	if line == "" || strings.Contains(line, "\x1b[") {
+		return line
+	}
+	lower := strings.ToLower(line)
+	for _, marker := range []string{"error", "failed", "fatal", "denied"} {
+		if strings.Contains(lower, marker) {
+			return color.Red(line)
+		}
+	}
+	for _, marker := range []string{"created", "started", "running", "removed", "stopped", "done", "complete", "successfully", "built", "pulled"} {
+		if strings.Contains(lower, marker) {
+			return color.Green(line)
+		}
+	}
+	if kind == "build" && (strings.HasPrefix(line, "#") || strings.HasPrefix(line, "=>") || strings.HasPrefix(line, " =>") || strings.HasPrefix(line, "Step ") || strings.HasPrefix(line, " --->")) {
+		return color.Cyan(line)
+	}
+	if (kind == "compose up" || kind == "compose down") && strings.HasPrefix(line, "[+") {
+		return color.LightBlue(line)
+	}
+	return line
 }
 
 type ptyReader struct {

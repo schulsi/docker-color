@@ -44,6 +44,12 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		command.Stderr = stderr
 		return runLiveStats(command, stdout)
 	}
+	if colorize && isLiveColorCommand(kind) {
+		command := exec.Command(dockerPath, args...)
+		command.Stdin = stdin
+		command.Stderr = stderr
+		return runLiveCommand(command, stdout, kind)
+	}
 
 	command := exec.Command(dockerPath, args...)
 	command.Stdin = stdin
@@ -54,6 +60,10 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	return runColorized(command, stdout, kind)
+}
+
+func isLiveColorCommand(kind string) bool {
+	return kind == "build" || kind == "compose up" || kind == "compose down"
 }
 
 func DetectCommand(args []string) (string, bool) {
@@ -77,9 +87,15 @@ func DetectCommand(args []string) (string, bool) {
 			if subcommand == "ls" || subcommand == "list" {
 				return "images", true
 			}
+			if subcommand == "inspect" {
+				return "inspect", true
+			}
 		case "compose":
 			if subcommand == "ps" {
 				return "compose ps", true
+			}
+			if subcommand == "up" || subcommand == "down" {
+				return "compose " + subcommand, true
 			}
 			if subcommand == "logs" {
 				return "compose logs", false
@@ -88,7 +104,7 @@ func DetectCommand(args []string) (string, bool) {
 	}
 
 	switch command {
-	case "ps", "images", "inspect":
+	case "ps", "images", "inspect", "build":
 		return command, true
 	case "stats":
 		return command, true

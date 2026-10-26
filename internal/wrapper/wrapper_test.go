@@ -24,7 +24,11 @@ func TestDetectCommand(t *testing.T) {
 		{name: "container ls", args: []string{"container", "ls"}, want: "ps", ok: true},
 		{name: "container inspect", args: []string{"container", "inspect", "api"}, want: "inspect", ok: true},
 		{name: "image ls", args: []string{"image", "ls"}, want: "images", ok: true},
+		{name: "image inspect", args: []string{"image", "inspect", "api:latest"}, want: "inspect", ok: true},
 		{name: "compose ps", args: []string{"compose", "ps"}, want: "compose ps", ok: true},
+		{name: "compose up", args: []string{"compose", "up", "-d"}, want: "compose up", ok: true},
+		{name: "compose down", args: []string{"compose", "down"}, want: "compose down", ok: true},
+		{name: "build", args: []string{"build", "."}, want: "build", ok: true},
 		{name: "compose logs", args: []string{"compose", "logs", "-f"}, want: "compose logs"},
 		{name: "stats", args: []string{"stats"}, want: "stats", ok: true},
 		{name: "exec passthrough", args: []string{"exec", "-it", "container", "sh"}},
@@ -166,6 +170,67 @@ func TestInspectMockDocker(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "\x1b[1;34m\"Id\"") || !strings.Contains(stdout.String(), "\x1b[0;32m\"container-id\"") {
 		t.Fatalf("expected inspect JSON to be colored, got %q", stdout.String())
+	}
+}
+
+func TestImageInspectMockDocker(t *testing.T) {
+	directory := t.TempDir()
+	mock := filepath.Join(directory, "docker")
+	if err := os.WriteFile(mock, []byte("#!/bin/sh\nprintf '%s\\n' '{\"Id\":\"image-id\",\"RepoTags\":[\"sample:latest\"]}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DCOLOR_DOCKER_PATH", mock)
+	t.Setenv("DCOLOR_COLOR", "always")
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "")
+
+	var stdout, stderr bytes.Buffer
+	code := Main([]string{"image", "inspect", "sample:latest"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("Main() exit code = %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "\x1b[1;34m\"Id\"") || !strings.Contains(stdout.String(), "\x1b[0;32m\"image-id\"") {
+		t.Fatalf("expected image inspect JSON to be colored, got %q", stdout.String())
+	}
+}
+
+func TestLiveCommandColorization(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("PTY live output is supported on Unix platforms")
+	}
+	directory := t.TempDir()
+	mock := filepath.Join(directory, "docker")
+	script := "#!/bin/sh\n[ -t 1 ] || exit 34\ncase \"$1 $2\" in\n  'build .') printf 'Step 1/2 : FROM alpine\\nSuccessfully built abc123\\n' ;;\n  'compose up') printf '[+] Running 1/1\\nContainer sample Started\\n' ;;\n  'compose down') printf 'Container sample Removed\\n' ;;\nesac\n"
+	if err := os.WriteFile(mock, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DCOLOR_DOCKER_PATH", mock)
+	t.Setenv("DCOLOR_COLOR", "always")
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "")
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "build", args: []string{"build", "."}, want: "\x1b[0;36mStep 1/2"},
+		{name: "compose up", args: []string{"compose", "up"}, want: "\x1b[0;32mContainer sample Started"},
+		{name: "compose down", args: []string{"compose", "down"}, want: "\x1b[0;32mContainer sample Removed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Main(test.args, strings.NewReader(""), &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("Main() exit code = %d, stderr=%q", code, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), test.want) {
+				t.Fatalf("expected %q in live output, got %q", test.want, stdout.String())
+			}
+		})
 	}
 }
 
