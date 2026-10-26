@@ -136,6 +136,50 @@ docker stats [--no-stream] | docker-color-output
 
 ![docker stats](https://github.com/devemio/docker-color-output/assets/5787193/a3134ae9-707b-4ad7-a5ea-765150d535e8)
 
+## Using dcolor as a Docker CLI wrapper
+
+`dcolor` runs the original Docker CLI with the arguments you provide. It colors recognized table output using the same embedded YAML rules as `docker-color-output`; the `docker` executable is not replaced or modified.
+
+Build and install both programs:
+
+```bash
+make build
+sudo install -m 755 bin/dcolor /usr/local/bin/dcolor
+sudo install -m 755 bin/docker-color-output /usr/local/bin/docker-color-output
+```
+
+`dcolor` locates Docker in common installation paths and then searches `PATH`. Set `DCOLOR_DOCKER_PATH` to select a specific executable. No wrapper configuration is needed for the built-in rules.
+
+```bash
+dcolor ps
+dcolor ps -a
+dcolor images
+dcolor container ls
+dcolor compose ps
+dcolor stats --no-stream
+dcolor exec -it mycontainer bash
+```
+
+The wrapper recognizes `ps`, `container ls`, `images`, `image ls`, `compose ps`, and `stats --no-stream`. Logs, live `stats`, and unsupported commands are passed through unchanged. Interactive commands such as `exec`, `run`, `attach`, `login`, `compose exec`, `compose up`, and `build` replace the wrapper process on macOS/Linux, preserving terminal behavior and signals. Windows uses connected standard streams without process replacement.
+
+Colors default to `auto`: enabled only when stdout is a terminal. Color policy precedence, highest first:
+
+1. `DCOLOR_COLOR=always` or `DCOLOR_COLOR=never`
+2. A non-empty `NO_COLOR` disables colors
+3. `CLICOLOR=0` disables colors
+4. A non-empty, non-zero `CLICOLOR_FORCE` enables colors
+5. Otherwise, colors follow whether stdout is a terminal (`DCOLOR_COLOR=auto`)
+
+The wrapper also bypasses colorization if Docker already emits ANSI control sequences. Table colorization is currently bounded to 8 MiB of output; larger output is relayed without transformation. Live `stats` and logs are deliberately passthrough because the existing table engine is not a terminal emulator or streaming log highlighter.
+
+| Command | Behavior |
+| --- | --- |
+| `docker ps` | Original Docker output |
+| `dcolor ps` | Docker output with recognized table colors on a terminal |
+| `docker ps \| docker-color-output` | Existing stdin filter behavior |
+
+`docker-color-output` remains a standalone stdin-to-stdout filter; `dcolor` invokes Docker directly and preserves the Docker process exit status.
+
 ## License
 
 This project is licensed under the [MIT License](https://opensource.org/licenses/MIT).
