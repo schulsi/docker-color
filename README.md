@@ -150,6 +150,24 @@ sudo install -m 755 bin/docker-color-output /usr/local/bin/docker-color-output
 
 `dcolor` locates Docker in common installation paths and then searches `PATH`. Set `DCOLOR_DOCKER_PATH` to select a specific executable. No wrapper configuration is needed for the built-in rules.
 
+### Shell completion
+
+`dcolor` reuses the Docker CLI's shell completion. Ensure Docker's completion is installed or loaded, then register the matching adapter from this repository.
+
+For Bash, source `bash/completion.sh` after Docker's completion script:
+
+```bash
+source /path/to/docker/completion
+source /path/to/docker-color/bash/completion.sh
+```
+
+For Zsh, add this repository's `zsh` directory to `fpath` before running `compinit`:
+
+```zsh
+fpath=(/path/to/docker-color/zsh $fpath)
+autoload -Uz compinit && compinit
+```
+
 ```bash
 dcolor ps
 dcolor ps -a
